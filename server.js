@@ -1,4 +1,4 @@
-// server.js (WebSocket + Twilio Integration)
+// server.js (WebSocket + Call Response Logging)
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
@@ -25,7 +25,7 @@ app.use(bodyParser.json());
 let connectedClients = [];
 
 wss.on('connection', (ws) => {
-  console.log('🔌 New staff connected');
+  console.log('🟢 New staff connected');
   connectedClients.push(ws);
 
   ws.on('close', () => {
@@ -63,7 +63,6 @@ app.post('/start-call', async (req, res) => {
 
     console.log(`✅ Call initiated successfully: SID=${call.sid}`);
 
-    // Notify all staff via WebSocket
     notifyStaff({ type: 'incoming_call', from: 'Sidney Kiosk', sid: call.sid });
 
     res.status(200).json({ message: 'Call initiated', sid: call.sid });
@@ -74,6 +73,19 @@ app.post('/start-call', async (req, res) => {
     }
     res.status(500).json({ message: 'Call failed', error: error.message });
   }
+});
+
+app.post('/call-response', (req, res) => {
+  const { sid, accepted } = req.body;
+
+  if (!sid || typeof accepted === 'undefined') {
+    return res.status(400).json({ message: 'Missing sid or accepted flag.' });
+  }
+
+  const status = accepted ? '✅ Accepted' : '❌ Declined';
+  console.log(`📥 Staff responded to call SID=${sid}: ${status}`);
+
+  res.status(200).json({ message: 'Response logged' });
 });
 
 app.post('/voice', (req, res) => {
