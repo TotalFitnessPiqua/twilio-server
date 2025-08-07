@@ -1,4 +1,4 @@
-// server.js (Socket.IO + Expo Push + Twilio)
+// server.js (Socket.IO + Expo Push Notifications + Twilio with DND Support)
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
@@ -30,9 +30,9 @@ app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
 let connectedSockets = [];
+let pushTokens = new Set();
 const handledCalls = new Set();
 const logFile = path.join(__dirname, 'call_logs.json');
-let pushTokens = [];
 
 io.on('connection', (socket) => {
   console.log('🟢 Staff connected via Socket.IO');
@@ -66,12 +66,12 @@ function saveCallLog(entry) {
 }
 
 async function sendExpoPushNotifications() {
-  if (!pushTokens.length) {
+  if (!pushTokens.size) {
     console.warn('⚠️ No Expo push tokens registered.');
     return;
   }
 
-  const messages = pushTokens.map(token => ({
+  const messages = Array.from(pushTokens).map(token => ({
     to: token,
     sound: 'default',
     title: '📞 Incoming Call',
@@ -95,15 +95,24 @@ async function sendExpoPushNotifications() {
 
 app.post('/register-token', (req, res) => {
   const { token } = req.body;
-  if (token && !pushTokens.includes(token)) {
-    pushTokens.push(token);
+  if (token) {
+    pushTokens.add(token);
     console.log('✅ Registered push token:', token);
   }
   res.sendStatus(200);
 });
 
+app.post('/unregister-token', (req, res) => {
+  const { token } = req.body;
+  if (token && pushTokens.has(token)) {
+    pushTokens.delete(token);
+    console.log('🚫 Unregistered push token:', token);
+  }
+  res.sendStatus(200);
+});
+
 app.get('/', (req, res) => {
-  res.send('Twilio server with Socket.IO + Expo Push is running.');
+  res.send('Twilio server with Socket.IO + Expo Push + DND support is running.');
 });
 
 app.get('/logs', (req, res) => {
@@ -122,7 +131,7 @@ app.post('/start-call', async (req, res) => {
   const { to } = req.body;
   if (!to) {
     console.error('❌ Missing phone number in request');
-    return res.status(400).json({ message: 'Missing \"to\" field in body' });
+    return res.status(400).json({ message: 'Missing "to" field in body' });
   }
 
   try {
