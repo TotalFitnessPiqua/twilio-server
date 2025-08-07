@@ -1,4 +1,4 @@
-// server.js (WebSocket + Sync + Logging)
+// server.js (with OneSignal Push Integration)
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
@@ -7,6 +7,7 @@ const http = require('http');
 const WebSocket = require('ws');
 const fs = require('fs');
 const path = require('path');
+const fetch = require('node-fetch');
 
 require('dotenv').config();
 
@@ -19,6 +20,9 @@ const accountSid = process.env.TWILIO_ACCOUNT_SID;
 const authToken = process.env.TWILIO_AUTH_TOKEN;
 const twilioNumber = process.env.TWILIO_PHONE_NUMBER;
 const client = twilio(accountSid, authToken);
+
+const onesignalAppId = '0c936656-0b62-452c-81a8-6ab5c3bcca40';
+const onesignalApiKey = process.env.ONESIGNAL_API_KEY;
 
 app.use(cors());
 app.use(bodyParser.urlencoded({ extended: false }));
@@ -61,8 +65,38 @@ function saveCallLog(entry) {
   });
 }
 
+async function sendPushNotification() {
+  const payload = {
+    app_id: onesignalAppId,
+    included_segments: ["Subscribed Users"],
+    headings: { en: "Incoming Call" },
+    contents: { en: "Sidney Kiosk is calling for support." },
+    url: "https://www.totalfitnessappstaff.netlify.app"
+  };
+
+  try {
+    const response = await fetch('https://onesignal.com/api/v1/notifications', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Basic ${onesignalApiKey}`
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const data = await response.json();
+    if (response.ok) {
+      console.log('🔔 Push notification sent:', data.id);
+    } else {
+      console.error('❌ Failed to send push:', data.errors || data);
+    }
+  } catch (err) {
+    console.error('❌ Push error:', err);
+  }
+}
+
 app.get('/', (req, res) => {
-  res.send('Twilio server is running with WebSocket + Sync + Logging support.');
+  res.send('Twilio server with WebSocket + OneSignal integration is running.');
 });
 
 app.get('/logs', (req, res) => {
@@ -93,6 +127,7 @@ app.post('/start-call', async (req, res) => {
 
     console.log(`✅ Call initiated successfully: SID=${call.sid}`);
     notifyStaff({ type: 'incoming_call', from: 'Sidney Kiosk', sid: call.sid });
+    sendPushNotification();
 
     res.status(200).json({ message: 'Call initiated', sid: call.sid });
   } catch (error) {
