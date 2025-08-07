@@ -1,19 +1,23 @@
-// server.js (with OneSignal Push Integration)
+// server.js (Socket.IO + OneSignal + Twilio)
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
 const twilio = require('twilio');
 const http = require('http');
-const WebSocket = require('ws');
+const { Server } = require('socket.io');
 const fs = require('fs');
 const path = require('path');
 const fetch = require('node-fetch');
-
 require('dotenv').config();
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+const io = new Server(server, {
+  cors: {
+    origin: '*',
+    methods: ['GET', 'POST']
+  }
+});
 const port = 3000;
 
 const accountSid = process.env.TWILIO_ACCOUNT_SID;
@@ -28,25 +32,23 @@ app.use(cors());
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
-let connectedClients = [];
+let connectedSockets = [];
 const handledCalls = new Set();
 const logFile = path.join(__dirname, 'call_logs.json');
 
-wss.on('connection', (ws) => {
-  console.log('🟢 New staff connected');
-  connectedClients.push(ws);
+io.on('connection', (socket) => {
+  console.log('🟢 Staff connected via Socket.IO');
+  connectedSockets.push(socket);
 
-  ws.on('close', () => {
+  socket.on('disconnect', () => {
     console.log('🔌 Staff disconnected');
-    connectedClients = connectedClients.filter(client => client !== ws);
+    connectedSockets = connectedSockets.filter(s => s !== socket);
   });
 });
 
 function notifyStaff(data) {
-  connectedClients.forEach(client => {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(JSON.stringify(data));
-    }
+  connectedSockets.forEach(socket => {
+    socket.emit(data.type, data);
   });
 }
 
@@ -96,7 +98,7 @@ async function sendPushNotification() {
 }
 
 app.get('/', (req, res) => {
-  res.send('Twilio server with WebSocket + OneSignal integration is running.');
+  res.send('Twilio server with Socket.IO + OneSignal integration is running.');
 });
 
 app.get('/logs', (req, res) => {
@@ -115,7 +117,7 @@ app.post('/start-call', async (req, res) => {
   const { to } = req.body;
   if (!to) {
     console.error('❌ Missing phone number in request');
-    return res.status(400).json({ message: 'Missing "to" field in body' });
+    return res.status(400).json({ message: 'Missing \"to\" field in body' });
   }
 
   try {
@@ -167,5 +169,5 @@ app.post('/voice', (req, res) => {
 });
 
 server.listen(port, () => {
-  console.log(`🚀 Server listening on http://localhost:${port}`);
+  console.log(`🚀 Twilio Socket.IO server running on http://localhost:${port}`);
 });
