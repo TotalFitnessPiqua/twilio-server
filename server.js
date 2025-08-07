@@ -1,4 +1,4 @@
-// server.js (Socket.IO + OneSignal + Twilio)
+// server.js (Socket.IO + Expo Push + Twilio)
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
@@ -25,9 +25,6 @@ const authToken = process.env.TWILIO_AUTH_TOKEN;
 const twilioNumber = process.env.TWILIO_PHONE_NUMBER;
 const client = twilio(accountSid, authToken);
 
-const onesignalAppId = '0c936656-0b62-452c-81a8-6ab5c3bcca40';
-const onesignalApiKey = process.env.ONESIGNAL_API_KEY;
-
 app.use(cors());
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
@@ -35,6 +32,7 @@ app.use(bodyParser.json());
 let connectedSockets = [];
 const handledCalls = new Set();
 const logFile = path.join(__dirname, 'call_logs.json');
+let pushTokens = [];
 
 io.on('connection', (socket) => {
   console.log('🟢 Staff connected via Socket.IO');
@@ -67,38 +65,45 @@ function saveCallLog(entry) {
   });
 }
 
-async function sendPushNotification() {
-  const payload = {
-    app_id: onesignalAppId,
-    included_segments: ["Subscribed Users"],
-    headings: { en: "Incoming Call" },
-    contents: { en: "Sidney Kiosk is calling for support." },
-    url: "https://www.totalfitnessappstaff.netlify.app"
-  };
+async function sendExpoPushNotifications() {
+  if (!pushTokens.length) {
+    console.warn('⚠️ No Expo push tokens registered.');
+    return;
+  }
+
+  const messages = pushTokens.map(token => ({
+    to: token,
+    sound: 'default',
+    title: '📞 Incoming Call',
+    body: 'Sidney Kiosk is calling for support.',
+    data: { type: 'incoming_call' },
+  }));
 
   try {
-    const response = await fetch('https://onesignal.com/api/v1/notifications', {
+    const response = await fetch('https://exp.host/--/api/v2/push/send', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Basic ${onesignalApiKey}`
-      },
-      body: JSON.stringify(payload)
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(messages)
     });
 
     const data = await response.json();
-    if (response.ok) {
-      console.log('🔔 Push notification sent:', data.id);
-    } else {
-      console.error('❌ Failed to send push:', data.errors || data);
-    }
+    console.log('🔔 Expo push response:', data);
   } catch (err) {
-    console.error('❌ Push error:', err);
+    console.error('❌ Expo push error:', err);
   }
 }
 
+app.post('/register-token', (req, res) => {
+  const { token } = req.body;
+  if (token && !pushTokens.includes(token)) {
+    pushTokens.push(token);
+    console.log('✅ Registered push token:', token);
+  }
+  res.sendStatus(200);
+});
+
 app.get('/', (req, res) => {
-  res.send('Twilio server with Socket.IO + OneSignal integration is running.');
+  res.send('Twilio server with Socket.IO + Expo Push is running.');
 });
 
 app.get('/logs', (req, res) => {
@@ -129,7 +134,7 @@ app.post('/start-call', async (req, res) => {
 
     console.log(`✅ Call initiated successfully: SID=${call.sid}`);
     notifyStaff({ type: 'incoming_call', from: 'Sidney Kiosk', sid: call.sid });
-    sendPushNotification();
+    sendExpoPushNotifications();
 
     res.status(200).json({ message: 'Call initiated', sid: call.sid });
   } catch (error) {
