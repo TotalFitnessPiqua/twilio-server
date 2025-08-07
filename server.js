@@ -1,4 +1,4 @@
-// server.js (FIXED: Push registration, call logs, notifications working)
+// server.js (Fully patched with log, push, and file failsafes)
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
@@ -25,27 +25,42 @@ const authToken = process.env.TWILIO_AUTH_TOKEN;
 const twilioNumber = process.env.TWILIO_PHONE_NUMBER;
 const client = twilio(accountSid, authToken);
 
+const pushTokensFile = path.join(__dirname, 'push_tokens.json');
+const logFile = path.join(__dirname, 'call_logs.json');
+
 app.use(cors());
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
 let connectedSockets = [];
 const handledCalls = new Set();
-const pushTokensFile = path.join(__dirname, 'push_tokens.json');
-const logFile = path.join(__dirname, 'call_logs.json');
+
+// Ensure necessary JSON files exist
+function ensureFileExists(filePath, defaultContent = []) {
+  if (!fs.existsSync(filePath)) {
+    fs.writeFileSync(filePath, JSON.stringify(defaultContent, null, 2));
+    console.log(`📁 Created ${path.basename(filePath)} with default content.`);
+  }
+}
+ensureFileExists(pushTokensFile);
+ensureFileExists(logFile);
 
 function readJsonFileSafe(filePath) {
   try {
-    if (!fs.existsSync(filePath)) return [];
     const data = fs.readFileSync(filePath, 'utf8');
     return JSON.parse(data);
-  } catch {
+  } catch (e) {
+    console.error(`❌ Failed to read ${filePath}:`, e.message);
     return [];
   }
 }
 
 function writeJsonFileSafe(filePath, data) {
-  fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+  try {
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+  } catch (e) {
+    console.error(`❌ Failed to write ${filePath}:`, e.message);
+  }
 }
 
 io.on('connection', (socket) => {
@@ -68,6 +83,7 @@ function saveCallLog(entry) {
   const logs = readJsonFileSafe(logFile);
   logs.unshift(entry);
   writeJsonFileSafe(logFile, logs.slice(0, 100));
+  console.log(`📝 Logged call: ${entry.sid} (${entry.accepted ? 'Accepted' : 'Declined'})`);
 }
 
 async function sendExpoPushNotifications() {
@@ -76,26 +92,28 @@ async function sendExpoPushNotifications() {
     console.warn('⚠️ No Expo push tokens registered.');
     return;
   }
+  console.log(`📨 Sending push to ${pushTokens.length} token(s)`);
 
-  const messages = pushTokens.map(token => ({
-    to: token,
-    sound: 'default',
-    title: '📞 Incoming Call',
-    body: 'Sidney Kiosk is calling for support.',
-    data: { type: 'incoming_call' },
-  }));
+  for (const token of pushTokens) {
+    const payload = {
+      to: token,
+      sound: 'default',
+      title: '📞 Incoming Call',
+      body: 'Sidney Kiosk is calling for support.',
+      data: { type: 'incoming_call' }
+    };
 
-  try {
-    const response = await fetch('https://exp.host/--/api/v2/push/send', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(messages)
-    });
-
-    const data = await response.json();
-    console.log('🔔 Expo push response:', data);
-  } catch (err) {
-    console.error('❌ Expo push error:', err);
+    try {
+      const response = await fetch('https://exp.host/--/api/v2/push/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await response.json();
+      console.log(`🔔 Push result for token: ${token.slice(-10)}... =>`, data);
+    } catch (err) {
+      console.error(`❌ Push failed for token ${token}:`, err.message);
+    }
   }
 }
 
@@ -122,7 +140,7 @@ app.post('/unregister-token', (req, res) => {
 });
 
 app.get('/', (req, res) => {
-  res.send('Twilio server with Socket.IO + Expo Push + DND support is running.');
+  res.send('Twilio server with Socket.IO + Expo Push + Logging fully enabled.');
 });
 
 app.get('/logs', (req, res) => {
@@ -144,9 +162,17 @@ app.post('/start-call', async (req, res) => {
       url: `${process.env.PUBLIC_URL || 'https://twilio-voice-server-8uz5.onrender.com'}/voice`,
     });
 
-    console.log(`✅ Call initiated successfully: SID=${call.sid}`);
+    console.log(`✅ Call initiated: SID=${call.sid}`);
     notifyStaff({ type: 'incoming_call', from: 'Sidney Kiosk', sid: call.sid });
-    sendExpoPushNotifications();
+    await sendExpoPushNotifications();
+
+    const logEntry = {
+      sid: call.sid,
+      accepted: null,
+      time: new Date().toISOString(),
+      source: 'Sidney Kiosk'
+    };
+    saveCallLog(logEntry);
 
     res.status(200).json({ message: 'Call initiated', sid: call.sid });
   } catch (error) {
@@ -165,16 +191,17 @@ app.post('/call-response', (req, res) => {
   }
   handledCalls.add(sid);
 
-  const logEntry = {
-    sid,
-    accepted,
-    time: new Date().toISOString(),
-    source: 'Sidney Kiosk'
-  };
-  saveCallLog(logEntry);
+  const logs = readJsonFileSafe(logFile);
+  const index = logs.findIndex(log => log.sid === sid);
+  if (index !== -1) {
+    logs[index].accepted = accepted;
+    writeJsonFileSafe(logFile, logs);
+    console.log(`📥 Updated call SID=${sid}: ${accepted ? '✅ Accepted' : '❌ Declined'}`);
+  } else {
+    saveCallLog({ sid, accepted, time: new Date().toISOString(), source: 'Sidney Kiosk' });
+  }
 
   notifyStaff({ type: 'call_resolved', sid, accepted });
-  console.log(`📥 Staff responded to call SID=${sid}: ${accepted ? '✅ Accepted' : '❌ Declined'}`);
   res.status(200).json({ message: 'Response logged' });
 });
 
@@ -186,5 +213,5 @@ app.post('/voice', (req, res) => {
 });
 
 server.listen(port, () => {
-  console.log(`🚀 Twilio Socket.IO server running on http://localhost:${port}`);
+  console.log(`🚀 Server live at http://localhost:${port}`);
 });
