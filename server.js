@@ -1,4 +1,4 @@
-// server.js (Socket.IO + Expo Push Notifications + Twilio with DND Support)
+// server.js (FIXED: Push registration, call logs, notifications working)
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
@@ -30,9 +30,23 @@ app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
 let connectedSockets = [];
-let pushTokens = new Set();
 const handledCalls = new Set();
+const pushTokensFile = path.join(__dirname, 'push_tokens.json');
 const logFile = path.join(__dirname, 'call_logs.json');
+
+function readJsonFileSafe(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return [];
+    const data = fs.readFileSync(filePath, 'utf8');
+    return JSON.parse(data);
+  } catch {
+    return [];
+  }
+}
+
+function writeJsonFileSafe(filePath, data) {
+  fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+}
 
 io.on('connection', (socket) => {
   console.log('🟢 Staff connected via Socket.IO');
@@ -51,27 +65,19 @@ function notifyStaff(data) {
 }
 
 function saveCallLog(entry) {
-  fs.readFile(logFile, 'utf8', (err, data) => {
-    let logs = [];
-    if (!err && data) {
-      try {
-        logs = JSON.parse(data);
-      } catch {}
-    }
-    logs.unshift(entry);
-    fs.writeFile(logFile, JSON.stringify(logs.slice(0, 100), null, 2), err => {
-      if (err) console.error('❌ Failed to write log:', err);
-    });
-  });
+  const logs = readJsonFileSafe(logFile);
+  logs.unshift(entry);
+  writeJsonFileSafe(logFile, logs.slice(0, 100));
 }
 
 async function sendExpoPushNotifications() {
-  if (!pushTokens.size) {
+  const pushTokens = readJsonFileSafe(pushTokensFile);
+  if (!pushTokens.length) {
     console.warn('⚠️ No Expo push tokens registered.');
     return;
   }
 
-  const messages = Array.from(pushTokens).map(token => ({
+  const messages = pushTokens.map(token => ({
     to: token,
     sound: 'default',
     title: '📞 Incoming Call',
@@ -96,18 +102,22 @@ async function sendExpoPushNotifications() {
 app.post('/register-token', (req, res) => {
   const { token } = req.body;
   if (token) {
-    pushTokens.add(token);
-    console.log('✅ Registered push token:', token);
+    const tokens = readJsonFileSafe(pushTokensFile);
+    if (!tokens.includes(token)) {
+      tokens.push(token);
+      writeJsonFileSafe(pushTokensFile, tokens);
+      console.log('✅ Registered push token:', token);
+    }
   }
   res.sendStatus(200);
 });
 
 app.post('/unregister-token', (req, res) => {
   const { token } = req.body;
-  if (token && pushTokens.has(token)) {
-    pushTokens.delete(token);
-    console.log('🚫 Unregistered push token:', token);
-  }
+  const tokens = readJsonFileSafe(pushTokensFile);
+  const newTokens = tokens.filter(t => t !== token);
+  writeJsonFileSafe(pushTokensFile, newTokens);
+  console.log('🚫 Unregistered push token:', token);
   res.sendStatus(200);
 });
 
@@ -116,15 +126,8 @@ app.get('/', (req, res) => {
 });
 
 app.get('/logs', (req, res) => {
-  fs.readFile(logFile, 'utf8', (err, data) => {
-    if (err) return res.status(500).json({ message: 'Could not read logs' });
-    try {
-      const logs = JSON.parse(data);
-      res.status(200).json(logs);
-    } catch {
-      res.status(500).json({ message: 'Invalid log data' });
-    }
-  });
+  const logs = readJsonFileSafe(logFile);
+  res.status(200).json(logs);
 });
 
 app.post('/start-call', async (req, res) => {
